@@ -1,41 +1,60 @@
-from fastapi import FastAPI
+import os
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import anthropic
-import os
+from anthropic import Anthropic
 
 app = FastAPI()
 
-# Разрешаем Replit делать запросы к нашему серверу
+# НАСТРОЙКА CORS: чтобы Replit мог без ограничений общаться с Render
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Разрешает запросы со всех сайтов (включая Replit)
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-
-class QueryRequest(BaseModel):
+# Описываем структуру данных, которую отправляет ваш HTML-код
+class LegalQuery(BaseModel):
     user_input: str
     business_type: str
 
+# Инициализируем Claude API (Ключ должен лежать в Environment Variables на Render)
+anthropic_client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+# Этот роут обрабатывает адрес /ask, который прописан в вашем HTML
 @app.post("/ask")
-async def ask_claude(request: QueryRequest):
-    # Системный промпт с включенным кэшированием Anthropic Prompt Caching
-    system_instruction = [
-        {
-            "type": "text",
-            "text": "Ты — высший налоговый и юридический консультант в Казахстане на май 2026 года. Ссылка на старый кодекс запрещена. Распиши ГК РК, ТК РК, Новый НК РК 2026 и КоАП РК (1 МРП = 4325 тенге). Категория бизнеса пользователя: " + request.business_type,
-            "cache_control": {"type": "ephemeral"} # ЭТО СНИЖАЕТ СТОИМОСТЬ ПОВТОРНЫХ ЗАПРОСОВ НА 90%
-        }
-    ]
-    
-    response = client.messages.create(
-        model="claude-3-5-haiku-20241022", # Самая дешевая, точная и быстрая модель
-        max_tokens=1500,
-        temperature=0.1,
-        system=system_instruction,
-        messages=[{"role": "user", "content": request.user_input}]
-    )
-    return {"reply": response.content[0].text}
+async def ask_lawyer(query: LegalQuery):
+    try:
+        # Формируем умный системный промпт с учетом выбранного бизнеса
+        system_instruction = (
+            "Ты — высококвалифицированный налоговый и юридический консультант в Казахстане.\n"
+            "Твоя база знаний полностью обновлена актуальными нормами Налогового кодекса РК "
+            f"и Предпринимательского кодекса РК. Текущий год — 2026.\n"
+            f"ВАЖНО: Пользователь определил свою категорию как: '{query.business_type}'.\n"
+            "При расчете рисков, проверок или штрафов по КоАП опирайся СТРОГО на санкции, "
+            f"предусмотренные именно для категории '{query.business_type}'."
+        )
+
+        # Запрос к модели Claude
+        message = anthropic_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=2000,
+            temperature=0.3,
+            system=system_instruction,
+            messages=[
+                {"role": "user", "content": query.user_input}
+            ]
+        )
+        
+        # Возвращаем ответ в поле 'reply', как его ищет ваш index.html
+        return {"reply": message.content[0].text}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Базовый роут, чтобы при заходе на ссылку в браузере не было ошибки 404
+@app.get("/")
+def read_root():
+    return {"status": "Консультант работает онлайн. Используйте POST /ask"}
