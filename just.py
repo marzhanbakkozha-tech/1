@@ -6,7 +6,7 @@ from anthropic import Anthropic
 
 app = FastAPI()
 
-# НАСТРОЙКА CORS: чтобы ваш сайт из Replit мог свободно общаться с Render
+# Разрешаем Replit общаться с Render без блокировок CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,28 +15,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Описываем структуру данных, которую шлет ваш HTML
 class LegalQuery(BaseModel):
     user_input: str
     business_type: str
 
-# ПОДКЛЮЧАЕМ КЛЮЧ: теперь Python ищет переменную "APP", как у вас в Render!
-anthropic_client = Anthropic(api_key=os.environ.get("APP"))
+# Проверяем, видит ли вообще сервер ваш ключ в переменной "APP"
+api_key_value = os.environ.get("APP")
 
 @app.post("/ask")
 async def ask_lawyer(query: LegalQuery):
+    # Проверка 1: Если переменная APP вообще пустая в Render
+    if not api_key_value:
+        return {"reply": "⚠️ Ошибка бэкенда: Переменная окружения 'APP' не найдена в настройках Render!"}
+        
     try:
-        # Системная инструкция для Claude с фокусом на законодательство РК 2026 года
+        # Инициализируем клиент внутри запроса для надежности
+        anthropic_client = Anthropic(api_key=api_key_value)
+
         system_instruction = (
             "Ты — профессиональный налоговый и юридический консультант в Казахстане.\n"
             "Твоя база знаний актуализирована под нормы Налогового кодекса РК "
             "и Предпринимательского кодекса РК на текущий 2026 год.\n"
-            f"Категория налогоплательщика, для которой делается расчет: '{query.business_type}'.\n"
-            "Отвечай структурированно, ссылайся на статьи кодексов и подбирай размеры штрафов по КоАП "
-            f"строго для категории '{query.business_type}'."
+            f"Категория налогоплательщика: '{query.business_type}'.\n"
+            "Отвечай структурированно, со ссылками на статьи."
         )
 
-        # Запрос к искусственному интеллекту Claude
         message = anthropic_client.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=2500,
@@ -47,12 +50,12 @@ async def ask_lawyer(query: LegalQuery):
             ]
         )
         
-        # Возвращаем ответ в поле 'reply', которое ждет ваш index.html в Replit
         return {"reply": message.content[0].text}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Если Anthropic вернул ошибку (нет баланса / плохой ключ), мы выведем её текст на сайт!
+        return {"reply": f"❌ Ошибка при вызове Claude API: {str(e)}"}
 
 @app.get("/")
 def read_root():
-    return {"status": "Консультант онлайн. Путь /ask готов к обработке POST-запросов."}
+    return {"status": "Консультант онлайн."}
